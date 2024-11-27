@@ -1,6 +1,6 @@
 # 📱 Telegram Account Checker
-
-Python script to check Telegram accounts using phone numbers.
+Enhanced version of bellingcat's Telegram Phone Checker!
+A Python script to check Telegram accounts using phone numbers.
 
 ## ✨ Features
 
