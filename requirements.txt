@@ -1,0 +1,6 @@
+telethon
+rich
+asyncio
+click
+pathlib
+python-dotenv
