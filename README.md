@@ -1,11 +1,11 @@
 # 📱 Telegram Account Checker
 Enhanced version of bellingcat's Telegram Phone Checker!
 
-A Python script to check Telegram accounts using phone numbers.
+A Python script to check Telegram accounts using phone numbers or username.
 
 ## ✨ Features
 
-- 🔍 Check single or multiple phone numbers
+- 🔍 Check single or multiple phone numbers and usernames
 - 📁 Import numbers from text file
 - 📸 Auto-download profile pictures
 - 💾 Save results as JSON
@@ -55,10 +55,12 @@ python telegram_checker.py
 ```
 
 Choose from options:
-1. Check phone numbers directly (comma-separated)
-2. Import numbers from text file
-3. Clear saved credentials
-4. Exit
+1. Check phone numbers from input
+2. Check phone numbers from file
+3. Check usernames from input
+4. Check usernames from file
+5. Clear saved credentials
+6. Exit
 
 ## 📂 Output
 
