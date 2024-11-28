@@ -42,7 +42,7 @@ class TelegramUser:
     profile_photos: List[str] = None
 
     @classmethod
-    def from_user(cls, user: types.User, phone: str) -> 'TelegramUser':
+    def from_user(cls, user: types.User, phone: str = "") -> 'TelegramUser':
         return cls(
             id=user.id,
             username=user.username,
@@ -77,6 +77,12 @@ def validate_phone_number(phone: str) -> str:
     if not re.match(r'^\+\d{10,15}$', phone):
         raise ValueError(f"Invalid phone number format: {phone}")
     return phone
+
+def validate_username(username: str) -> str:
+    username = username.strip().lstrip('@')
+    if not re.match(r'^[A-Za-z]\w{3,30}[A-Za-z0-9]$', username):
+        raise ValueError(f"Invalid username format: {username}")
+    return username
 
 class TelegramChecker:
     def __init__(self):
@@ -128,7 +134,8 @@ class TelegramChecker:
 
             user_data.profile_photos = []
             for i, photo in enumerate(photos):
-                photo_path = PROFILE_PHOTOS_DIR / f"{user.id}_{user_data.phone}_photo_{i}.jpg"
+                identifier = user_data.phone if user_data.phone else user_data.username
+                photo_path = PROFILE_PHOTOS_DIR / f"{user.id}_{identifier}_photo_{i}.jpg"
                 await self.client.download_media(photo, file=photo_path)
                 user_data.profile_photos.append(str(photo_path))
         except Exception as e:
@@ -152,6 +159,26 @@ class TelegramChecker:
             logger.error(f"Error checking {phone}: {str(e)}")
             return None
 
+    async def check_username(self, username: str) -> Optional[TelegramUser]:
+        try:
+            username = validate_username(username)
+            user = await self.client.get_entity(username)
+            if not isinstance(user, types.User):
+                return None
+            
+            telegram_user = TelegramUser.from_user(user, "")
+            await self.download_all_profile_photos(user, telegram_user)
+            return telegram_user
+        except ValueError as e:
+            logger.error(f"Invalid username {username}: {str(e)}")
+            return None
+        except errors.UsernameNotOccupiedError:
+            logger.error(f"Username {username} not found")
+            return None
+        except Exception as e:
+            logger.error(f"Error checking username {username}: {str(e)}")
+            return None
+
     async def process_phones(self, phones: List[str]) -> dict:
         results = {}
         total_phones = len(phones)
@@ -171,6 +198,25 @@ class TelegramChecker:
                 results[phone] = {"error": f"Unexpected error: {str(e)}"}
         return results
 
+    async def process_usernames(self, usernames: List[str]) -> dict:
+        results = {}
+        total_usernames = len(usernames)
+        console.print(f"\n[cyan]Processing {total_usernames} usernames...[/cyan]")
+        
+        for i, username in enumerate(usernames, 1):
+            try:
+                username = username.strip()
+                if not username:
+                    continue
+                console.print(f"[cyan]Checking {username} ({i}/{total_usernames})[/cyan]")
+                user = await self.check_username(username)
+                results[username] = asdict(user) if user else {"error": "No Telegram account found"}
+            except ValueError as e:
+                results[username] = {"error": str(e)}
+            except Exception as e:
+                results[username] = {"error": f"Unexpected error: {str(e)}"}
+        return results
+
 async def main():
     checker = TelegramChecker()
     await checker.initialize()
@@ -179,22 +225,38 @@ async def main():
         rprint("\n[bold cyan]Telegram Account Checker[/bold cyan]")
         rprint("\n1. Check phone numbers from input")
         rprint("2. Check phone numbers from file")
-        rprint("3. Clear saved credentials")
-        rprint("4. Exit")
+        rprint("3. Check usernames from input")
+        rprint("4. Check usernames from file")
+        rprint("5. Clear saved credentials")
+        rprint("6. Exit")
         
-        choice = Prompt.ask("\nSelect an option", choices=["1", "2", "3", "4"])
+        choice = Prompt.ask("\nSelect an option", choices=["1", "2", "3", "4", "5", "6"])
         
         if choice == "1":
             phones = [p.strip() for p in Prompt.ask("Enter phone numbers (comma-separated)").split(",")]
+            results = await checker.process_phones(phones)
         elif choice == "2":
             file_path = Prompt.ask("Enter the path to your phone numbers file")
             try:
                 with open(file_path, 'r') as f:
                     phones = [line.strip() for line in f if line.strip()]
+                results = await checker.process_phones(phones)
             except FileNotFoundError:
                 console.print("[red]File not found![/red]")
                 continue
         elif choice == "3":
+            usernames = [u.strip() for u in Prompt.ask("Enter usernames (comma-separated)").split(",")]
+            results = await checker.process_usernames(usernames)
+        elif choice == "4":
+            file_path = Prompt.ask("Enter the path to your usernames file")
+            try:
+                with open(file_path, 'r') as f:
+                    usernames = [line.strip() for line in f if line.strip()]
+                results = await checker.process_usernames(usernames)
+            except FileNotFoundError:
+                console.print("[red]File not found![/red]")
+                continue
+        elif choice == "5":
             if Confirm.ask("Are you sure you want to clear saved credentials?"):
                 if CONFIG_FILE.exists():
                     CONFIG_FILE.unlink()
@@ -206,27 +268,27 @@ async def main():
         else:
             break
             
-        results = await checker.process_phones(phones)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_file = RESULTS_DIR / f"results_{timestamp}.json"
-        
-        with open(output_file, 'w') as f:
-            json.dump(results, f, indent=2)
+        if 'results' in locals():
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_file = RESULTS_DIR / f"results_{timestamp}.json"
             
-        console.print(f"\n[green]Results saved to {output_file}[/green]")
-        console.print("\n[bold]Results Summary:[/bold]")
-        for phone, data in results.items():
-            if "error" in data:
-                console.print(f"[red]❌ {phone}: {data['error']}[/red]")
-            else:
-                status = f"[green]✓ {phone}: {data.get('first_name', '')} {data.get('last_name', '')} (@{data.get('username', 'no username')})"
-                if data.get('profile_photos'):
-                    status += f" - {len(data['profile_photos'])} profile photos downloaded"
-                console.print(status + "[/green]")
-        
-        console.print("\n[bold cyan]Detailed Results (JSON):[/bold cyan]")
-        formatted_json = json.dumps(results, indent=2)
-        console.print(formatted_json)
+            with open(output_file, 'w') as f:
+                json.dump(results, f, indent=2)
+                
+            console.print(f"\n[green]Results saved to {output_file}[/green]")
+            console.print("\n[bold]Results Summary:[/bold]")
+            for identifier, data in results.items():
+                if "error" in data:
+                    console.print(f"[red]❌ {identifier}: {data['error']}[/red]")
+                else:
+                    status = f"[green]✓ {identifier}: {data.get('first_name', '')} {data.get('last_name', '')} (@{data.get('username', 'no username')})"
+                    if data.get('profile_photos'):
+                        status += f" - {len(data['profile_photos'])} profile photos downloaded"
+                    console.print(status + "[/green]")
+            
+            console.print("\n[bold cyan]Detailed Results (JSON):[/bold cyan]")
+            formatted_json = json.dumps(results, indent=2)
+            console.print(formatted_json)
 
 if __name__ == "__main__":
     try:
