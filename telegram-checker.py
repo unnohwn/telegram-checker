@@ -5,7 +5,7 @@ import os
 import pickle
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 import re
 from rich.console import Console
@@ -35,28 +35,118 @@ class TelegramUser:
     fake: bool
     bot: bool
     last_seen: str
+    last_seen_exact: Optional[str] = None
+    status_type: Optional[str] = None
+    bio: Optional[str] = None
+    common_chats_count: Optional[int] = None
+    blocked: Optional[bool] = None
     profile_photos: List[str] = None
+    privacy_restricted: bool = False
 
     @classmethod
     async def from_user(cls, client: TelegramClient, user: types.User, phone: str = "") -> 'TelegramUser':
         try:
+            bio = ''
+            common_chats_count = 0
+            blocked = False
+            
             try:
-                updated_user = await client.get_entity(user.id)
-                user = updated_user
+                full_user = await client(GetFullUserRequest(user.id))
+                user_full_info = full_user.full_user
+                bio = getattr(user_full_info, 'about', '') or ''
+                common_chats_count = getattr(user_full_info, 'common_chats_count', 0)
+                blocked = getattr(user_full_info, 'blocked', False)
             except:
                 pass
-            return cls(id=user.id, username=user.username, first_name=getattr(user, 'first_name', None) or "", last_name=getattr(user, 'last_name', None) or "", phone=phone, premium=getattr(user, 'premium', False), verified=getattr(user, 'verified', False), fake=getattr(user, 'fake', False), bot=getattr(user, 'bot', False), last_seen=get_user_status(user.status), profile_photos=[])
+
+            status_info = get_enhanced_user_status(user.status)
+            
+            return cls(
+                id=user.id,
+                username=user.username,
+                first_name=getattr(user, 'first_name', None) or "",
+                last_name=getattr(user, 'last_name', None) or "",
+                phone=phone,
+                premium=getattr(user, 'premium', False),
+                verified=getattr(user, 'verified', False),
+                fake=getattr(user, 'fake', False),
+                bot=getattr(user, 'bot', False),
+                last_seen=status_info['display_text'],
+                last_seen_exact=status_info['exact_time'],
+                status_type=status_info['status_type'],
+                bio=bio,
+                common_chats_count=common_chats_count,
+                blocked=blocked,
+                privacy_restricted=status_info['privacy_restricted'],
+                profile_photos=[]
+            )
         except Exception as e:
             logger.error(f"Error creating TelegramUser: {str(e)}")
-            return cls(id=user.id, username=getattr(user, 'username', None), first_name=getattr(user, 'first_name', None) or "", last_name=getattr(user, 'last_name', None) or "", phone=phone, premium=getattr(user, 'premium', False), verified=getattr(user, 'verified', False), fake=getattr(user, 'fake', False), bot=getattr(user, 'bot', False), last_seen=get_user_status(getattr(user, 'status', None)), profile_photos=[])
+            status_info = get_enhanced_user_status(getattr(user, 'status', None))
+            return cls(
+                id=user.id,
+                username=getattr(user, 'username', None),
+                first_name=getattr(user, 'first_name', None) or "",
+                last_name=getattr(user, 'last_name', None) or "",
+                phone=phone,
+                premium=getattr(user, 'premium', False),
+                verified=getattr(user, 'verified', False),
+                fake=getattr(user, 'fake', False),
+                bot=getattr(user, 'bot', False),
+                last_seen=status_info['display_text'],
+                last_seen_exact=status_info['exact_time'],
+                status_type=status_info['status_type'],
+                privacy_restricted=status_info['privacy_restricted'],
+                profile_photos=[]
+            )
 
-def get_user_status(status: types.TypeUserStatus) -> str:
-    if isinstance(status, types.UserStatusOnline): return "Currently online"
-    elif isinstance(status, types.UserStatusOffline): return f"Last seen: {status.was_online.strftime('%Y-%m-%d %H:%M:%S')}"
-    elif isinstance(status, types.UserStatusRecently): return "Last seen recently"
-    elif isinstance(status, types.UserStatusLastWeek): return "Last seen last week"
-    elif isinstance(status, types.UserStatusLastMonth): return "Last seen last month"
-    return "Unknown"
+def get_enhanced_user_status(status: types.TypeUserStatus) -> Dict[str, Any]:
+    result = {
+        'display_text': 'Unknown',
+        'exact_time': None,
+        'status_type': 'unknown',
+        'privacy_restricted': False
+    }
+    
+    if isinstance(status, types.UserStatusOnline):
+        result.update({
+            'display_text': "Currently online",
+            'status_type': 'online',
+            'privacy_restricted': False
+        })
+    elif isinstance(status, types.UserStatusOffline):
+        exact_time = status.was_online.strftime('%Y-%m-%d %H:%M:%S UTC')
+        result.update({
+            'display_text': f"Last seen: {exact_time}",
+            'exact_time': exact_time,
+            'status_type': 'offline',
+            'privacy_restricted': False
+        })
+    elif isinstance(status, types.UserStatusRecently):
+        result.update({
+            'display_text': "Last seen recently (1 second - 3 days ago)",
+            'status_type': 'recently',
+            'privacy_restricted': True
+        })
+    elif isinstance(status, types.UserStatusLastWeek):
+        result.update({
+            'display_text': "Last seen within a week (3-7 days ago)",
+            'status_type': 'last_week',
+            'privacy_restricted': True
+        })
+    elif isinstance(status, types.UserStatusLastMonth):
+        result.update({
+            'display_text': "Last seen within a month (7-30 days ago)",
+            'status_type': 'last_month',
+            'privacy_restricted': True
+        })
+    elif status is None:
+        result.update({
+            'display_text': "Status unavailable",
+            'status_type': 'unavailable'
+        })
+    
+    return result
 
 def validate_phone_number(phone: str) -> str:
     phone = re.sub(r'[^\d+]', '', phone.strip())
@@ -206,6 +296,47 @@ class TelegramChecker:
                 results[username] = {"error": f"Unexpected error: {str(e)}"}
         return results
 
+def display_enhanced_results(results: dict):
+    console.print("\n[bold]Enhanced Results Summary:[/bold]")
+    
+    for identifier, data in results.items():
+        if "error" in data:
+            console.print(f"[red]❌ {identifier}: {data['error']}[/red]")
+        else:
+            name = f"{data.get('first_name', '')} {data.get('last_name', '')}".strip()
+            username = f"@{data.get('username', 'no username')}"
+            
+            status_line = f"[green]✓ {identifier}: {name} ({username})[/green]"
+            
+            if data.get('privacy_restricted'):
+                status_line += " [yellow](Privacy restricted - exact time hidden)[/yellow]"
+            
+            if data.get('last_seen_exact'):
+                status_line += f"\n  📅 Exact time: {data['last_seen_exact']}"
+            else:
+                status_line += f"\n  📅 Status: {data.get('last_seen', 'Unknown')}"
+            
+            if data.get('bio'):
+                status_line += f"\n  📝 Bio: {data['bio'][:100]}{'...' if len(data['bio']) > 100 else ''}"
+            
+            if data.get('premium'):
+                status_line += "\n  ⭐ Telegram Premium user"
+            
+            if data.get('verified'):
+                status_line += "\n  ✅ Verified account"
+            
+            if data.get('blocked'):
+                status_line += "\n  🚫 User has blocked you"
+            
+            if data.get('common_chats_count', 0) > 0:
+                status_line += f"\n  👥 Common chats: {data['common_chats_count']}"
+            
+            if data.get('profile_photos'):
+                status_line += f"\n  📸 Profile photos downloaded: {len(data['profile_photos'])}"
+            
+            console.print(status_line)
+            console.print()
+
 async def main():
     checker = TelegramChecker()
     await checker.initialize()
@@ -263,14 +394,7 @@ async def main():
                 json.dump(results, f, indent=2)
                 
             console.print(f"\n[green]Results saved to {output_file}[/green]")
-            console.print("\n[bold]Results Summary:[/bold]")
-            for identifier, data in results.items():
-                if "error" in data:
-                    console.print(f"[red]❌ {identifier}: {data['error']}[/red]")
-                else:
-                    status = f"[green]✓ {identifier}: {data.get('first_name', '')} {data.get('last_name', '')} (@{data.get('username', 'no username')})"
-                    if data.get('profile_photos'): status += f" - {len(data['profile_photos'])} profile photos downloaded"
-                    console.print(status + "[/green]")
+            display_enhanced_results(results)
             
             console.print("\n[bold cyan]Detailed Results (JSON):[/bold cyan]")
             formatted_json = json.dumps(results, indent=2)
